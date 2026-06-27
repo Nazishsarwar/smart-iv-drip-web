@@ -65,6 +65,7 @@ app.use('/api/readings', require('./routes/readingRoutes'));
 app.use('/api/alerts',   require('./routes/alertRoutes'));
 app.use('/api/nurses',   require('./routes/nurseRoutes'));
 app.use('/api/reports',  require('./routes/reportRoutes'));
+app.use('/api/wards', require('./routes/wardRoutes'));
 
 // 404 handler
 app.use((req, res) => {
