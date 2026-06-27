@@ -1,53 +1,20 @@
-// backend/models/Patient.js
 const mongoose = require('mongoose');
 
 const patientSchema = new mongoose.Schema(
   {
-    name: {
-      type: String,
-      required: [true, 'Patient name is required'],
-      trim: true,
-    },
-    age: {
-      type: Number,
-      required: [true, 'Age is required'],
-    },
-    gender: {
-      type: String,
-      enum: ['male', 'female', 'other'],
-      required: true,
-    },
-    ward: {
-      type: String,
-      required: [true, 'Ward is required'],
-      trim: true,
-    },
-    bedNumber: {
-      type: String,
-      trim: true,
-    },
-    diagnosis: {
-      type: String,
-      trim: true,
-    },
-    assignedNurse: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Nurse',
-    },
-    activeSession: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Session',
-      default: null,
-    },
+    name:       { type: String, required: true, trim: true },
+    age:        { type: Number, default: null },
+    gender:     { type: String, enum: ['male', 'female', 'other'], default: 'male' },
+    ward:       { type: String, required: true },
+    bedNumber:  { type: String, required: true },
+    diagnosis:  { type: String, default: '' },
+    phone:      { type: String, default: '' },
     status: {
       type: String,
-      enum: ['active', 'inactive', 'discharged'],
-      default: 'active',
+      enum: ['normal', 'warning', 'critical', 'offline', 'inactive'],
+      default: 'inactive',
     },
-    admittedAt: {
-      type: Date,
-      default: Date.now,
-    },
+    isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

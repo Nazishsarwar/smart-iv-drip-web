@@ -1,4 +1,3 @@
-// backend/models/Session.js
 const mongoose = require('mongoose');
 
 const sessionSchema = new mongoose.Schema(
@@ -11,48 +10,25 @@ const sessionSchema = new mongoose.Schema(
     device: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Device',
-      required: true,
+      default: null,
     },
     nurse: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Nurse',
+      default: null,
     },
-    startedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-    prescribedRateDpm: {
-      type: Number,
-      required: [true, 'Prescribed drip rate is required'],
-    },
-    prescribedVolumeMl: {
-      type: Number,
-      required: [true, 'Prescribed volume is required'],
-    },
-    fluidType: {
-      type: String,
-      trim: true,
-    },
+    prescribedRate: { type: Number, required: true },
+    totalVolume:    { type: Number, required: true },
+    fluidType:      { type: String, default: 'Normal Saline' },
     status: {
       type: String,
-      enum: ['active', 'completed', 'interrupted'],
+      enum: ['active', 'completed', 'cancelled'],
       default: 'active',
     },
-    startedAt: {
-      type: Date,
-      default: Date.now,
-    },
-    endedAt: {
-      type: Date,
-    },
-    endReason: {
-      type: String,
-      trim: true,
-    },
-    notes: {
-      type: String,
-      trim: true,
-    },
+    startTime: { type: Date, default: Date.now },
+    endTime:   { type: Date, default: null },
+    endReason: { type: String, default: '' },
+    endNote:   { type: String, default: '' },
   },
   { timestamps: true }
 );
