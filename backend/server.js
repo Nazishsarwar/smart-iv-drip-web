@@ -31,7 +31,7 @@ const allowedOrigins = [
   'http://localhost:3000',
 ].filter(Boolean);
 
-// ─── Socket.IO setup (polling first, then upgrade — required for Railway) ───
+// ─── Socket.IO setup ───
 const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
@@ -54,7 +54,7 @@ initSocket(io);
 // ─── Middleware ───
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (Postman, mobile apps, ESP32)
+    // Allow requests with no origin (Postman, ESP32, mobile)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     return callback(new Error(`CORS blocked: ${origin}`));
@@ -64,13 +64,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Handle preflight requests
-app.options('*', cors());
+// ─── Preflight handler — Express 5 compatible wildcard ───
+app.options('/{*path}', cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Health check route ───
+// ─── Health check ───
 app.get('/', (req, res) => {
   res.json({
     success: true,
