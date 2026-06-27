@@ -19,21 +19,49 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   const fetchDashboard = useCallback(async () => {
-    try {
-      const [statsRes, alertsRes, wardsRes] = await Promise.all([
-        axiosInstance.get('/reports/dashboard-stats'),
-        axiosInstance.get('/alerts?limit=10&status=unresolved'),
-        axiosInstance.get('/wards'),
-      ]);
-      setStats(statsRes.data);
-      setRecentAlerts(alertsRes.data?.alerts || alertsRes.data || []);
-      setWards(wardsRes.data || []);
-    } catch (err) {
-      console.error('Dashboard fetch error:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  try {
+    const [statsRes, alertsRes, wardsRes] = await Promise.all([
+      axiosInstance.get('/reports/dashboard-stats'),
+      axiosInstance.get('/alerts?limit=10&status=unresolved'),
+      axiosInstance.get('/wards').catch(() => ({ data: [] })), // graceful fallback
+    ]);
+
+    setStats(statsRes.data || {
+      totalPatients: 0,
+      activeDevices: 0,
+      unresolvedAlerts: 0,
+      activeSessions: 0,
+    });
+
+    // Normalize alerts — handle array, { alerts: [] }, or { data: [] }
+    const alertsData = alertsRes.data;
+    setRecentAlerts(
+      Array.isArray(alertsData)
+        ? alertsData
+        : Array.isArray(alertsData?.alerts)
+        ? alertsData.alerts
+        : []
+    );
+
+    // Normalize wards — handle array, { wards: [] }, or any other shape
+    const wardsData = wardsRes.data;
+    setWards(
+      Array.isArray(wardsData)
+        ? wardsData
+        : Array.isArray(wardsData?.wards)
+        ? wardsData.wards
+        : []
+    );
+
+  } catch (err) {
+    console.error('Dashboard fetch error:', err);
+    // Prevent crash — keep defaults
+    setWards([]);
+    setRecentAlerts([]);
+  } finally {
+    setLoading(false);
+  }
+}, []);
 
   useEffect(() => {
     fetchDashboard();

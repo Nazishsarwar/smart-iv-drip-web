@@ -12,15 +12,29 @@ export function SocketProvider({ children }) {
   useEffect(() => {
     if (!token) return;
 
+    // Use polling first, then upgrade to websocket
+    // This is required for Railway which needs HTTP upgrade handshake
     socketRef.current = io(import.meta.env.VITE_SOCKET_URL, {
       auth: { token },
-      transports: ['websocket'],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 2000,
+      transports: ['polling', 'websocket'], // polling first — critical for Railway
+      reconnectionAttempts: 10,
+      reconnectionDelay: 3000,
+      timeout: 20000,
     });
 
-    socketRef.current.on('connect', () => setConnected(true));
-    socketRef.current.on('disconnect', () => setConnected(false));
+    socketRef.current.on('connect', () => {
+      console.log('✅ Socket connected');
+      setConnected(true);
+    });
+
+    socketRef.current.on('disconnect', (reason) => {
+      console.warn('Socket disconnected:', reason);
+      setConnected(false);
+    });
+
+    socketRef.current.on('connect_error', (err) => {
+      console.error('Socket connection error:', err.message);
+    });
 
     return () => {
       socketRef.current?.disconnect();
