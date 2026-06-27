@@ -1,15 +1,20 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
+const {
+  getWards,
+  getWard,
+  createWard,
+  updateWard,
+  deleteWard,
+} = require('../controllers/wardController');
 const { protect } = require('../middleware/authMiddleware');
 
-router.get('/', protect, async (req, res) => {
-  try {
-    const Ward = require('../models/Ward');
-    const wards = await Ward.find();
-    res.json({ success: true, data: wards });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+router.use(protect);
+
+router.get('/',    getWards);
+router.post('/',   createWard);
+router.get('/:id', getWard);
+router.put('/:id', updateWard);
+router.delete('/:id', deleteWard);
 
 module.exports = router;
