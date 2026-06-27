@@ -1,5 +1,5 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 const {
   getAlerts,
   getAlert,
@@ -10,28 +10,14 @@ const {
 } = require('../controllers/alertController');
 const { protect } = require('../middleware/authMiddleware');
 
-// All routes protected
 router.use(protect);
 
-// GET  /api/alerts         — get all alerts with filters
-router.get('/', getAlerts);
-
-// POST /api/alerts         — manually create alert (admin/testing)
-router.post('/', createAlert);
-
-// POST /api/alerts/resolve-all — bulk resolve (used by NotificationsPage)
+router.get('/',            getAlerts);
+router.post('/',           createAlert);
 router.post('/resolve-all', resolveAllAlerts);
-
-// GET  /api/alerts/:id     — get single alert
-router.get('/:id', getAlert);
-
-// PUT  /api/alerts/:id/acknowledge
-router.put('/:id/acknowledge', acknowledgeAlert);
-
-// PUT  /api/alerts/:id/resolve
-router.put('/:id/resolve', resolveAlert);
-
-// PATCH routes (frontend uses PATCH — support both)
+router.get('/:id',         getAlert);
+router.put('/:id/acknowledge',   acknowledgeAlert);
+router.put('/:id/resolve',       resolveAlert);
 router.patch('/:id/acknowledge', acknowledgeAlert);
 router.patch('/:id/resolve',     resolveAlert);
 

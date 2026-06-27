@@ -8,10 +8,10 @@ const getAlerts = async (req, res) => {
     const { status, type, severity, ward, startDate, endDate, limit } = req.query;
     const filter = {};
 
-    if (status) filter.status = status;
-    if (type)   filter.type   = type;
+    if (status)   filter.status   = status;
+    if (type)     filter.type     = type;
     if (severity) filter.severity = severity;
-    if (ward)   filter.ward   = ward;
+    if (ward)     filter.ward     = ward;
 
     if (startDate || endDate) {
       filter.createdAt = {};
@@ -20,10 +20,10 @@ const getAlerts = async (req, res) => {
     }
 
     const alerts = await Alert.find(filter)
-      .populate('patient',       'name ward bedNumber')
-      .populate('device',        'deviceId label')
-      .populate('acknowledgedBy','name')
-      .populate('resolvedBy',    'name')
+      .populate('patient',        'name ward bedNumber')
+      .populate('device',         'deviceId label')
+      .populate('acknowledgedBy', 'name')
+      .populate('resolvedBy',     'name')
       .sort({ createdAt: -1 })
       .limit(Number(limit) || 100);
 
@@ -43,10 +43,10 @@ const getAlerts = async (req, res) => {
 const getAlert = async (req, res) => {
   try {
     const alert = await Alert.findById(req.params.id)
-      .populate('patient',       'name ward bedNumber')
-      .populate('device',        'deviceId label')
-      .populate('acknowledgedBy','name')
-      .populate('resolvedBy',    'name');
+      .populate('patient',        'name ward bedNumber')
+      .populate('device',         'deviceId label')
+      .populate('acknowledgedBy', 'name')
+      .populate('resolvedBy',     'name');
 
     if (!alert) {
       return res.status(404).json({ success: false, message: 'Alert not found' });
@@ -63,7 +63,11 @@ const getAlert = async (req, res) => {
 // @access  Private
 const createAlert = async (req, res) => {
   try {
-    const { type, severity, patientName, ward, deviceId, message, patient, device } = req.body;
+    const {
+      type, severity, patientName,
+      ward, deviceId, message,
+      patient, device,
+    } = req.body;
 
     if (!type || !severity) {
       return res.status(400).json({
@@ -75,20 +79,18 @@ const createAlert = async (req, res) => {
     const alertData = {
       type,
       severity,
-      status:      'unresolved',
+      status:      'active',
       message:     message     || `Manual alert: ${type}`,
       ward:        ward        || 'Unspecified',
       patientName: patientName || 'Manual Test',
       deviceId:    deviceId    || 'TEST',
     };
 
-    // Optionally link to real patient/device documents if IDs provided
     if (patient) alertData.patient = patient;
     if (device)  alertData.device  = device;
 
     const alert = await Alert.create(alertData);
 
-    // Emit Socket.IO event so frontend updates live
     const io = req.app.get('io');
     if (io) io.emit('alert:new', alert);
 
@@ -158,7 +160,7 @@ const resolveAlert = async (req, res) => {
   }
 };
 
-// @desc    Resolve all unresolved alerts
+// @desc    Resolve all active/acknowledged alerts
 // @route   POST /api/alerts/resolve-all
 // @access  Private
 const resolveAllAlerts = async (req, res) => {
