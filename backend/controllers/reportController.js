@@ -154,9 +154,28 @@ const getPatientReport = async (req, res) => {
   }
 };
 
+const getDashboardStats = async (req, res) => {
+  try {
+    const [totalPatients, activeDevices, unresolvedAlerts, activeSessions] = await Promise.all([
+      Patient.countDocuments(),
+      Device.countDocuments({ status: 'online' }),
+      Alert.countDocuments({ status: 'unresolved' }),
+      Session.countDocuments({ status: 'active' })
+    ]);
+
+    res.json({
+      success: true,
+      data: { totalPatients, activeDevices, unresolvedAlerts, activeSessions }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   getOverview,
   getDeviceReport,
   getNurseReport,
   getPatientReport,
+  getDashboardStats,
 };

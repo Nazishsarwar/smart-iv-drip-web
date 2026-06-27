@@ -6,6 +6,7 @@ const {
   getDeviceReport,
   getNurseReport,
   getPatientReport,
+  getDashboardStats,
 } = require('../controllers/reportController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -15,5 +16,5 @@ router.get('/overview', getOverview);
 router.get('/devices', getDeviceReport);
 router.get('/nurses', getNurseReport);
 router.get('/patients', getPatientReport);
-
+router.get('/dashboard-stats', getDashboardStats);
 module.exports = router;
