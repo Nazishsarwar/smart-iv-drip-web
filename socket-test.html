@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Socket.IO Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+  <h2>Socket.IO Live Test</h2>
+  <p>Open browser console (F12) to see events</p>
+
+  <script>
+    const socket = io('http://localhost:5000');
+
+    socket.on('connect', () => {
+      console.log('✅ Connected to backend! Socket ID:', socket.id);
+    });
+
+    socket.on('disconnect', () => {
+      console.warn('🔴 Disconnected from backend');
+    });
+
+    socket.on('reading:update', (data) => {
+      console.log('📡 reading:update received:', data);
+    });
+
+    socket.on('alert:new', (data) => {
+      console.log('🚨 alert:new received:', data);
+    });
+
+    socket.on('alert:resolved', (data) => {
+      console.log('✅ alert:resolved received:', data);
+    });
+  </script>
+</body>
+</html>
