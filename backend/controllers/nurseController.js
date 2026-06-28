@@ -1,90 +1,149 @@
-// backend/controllers/nurseController.js
-const Nurse = require('../models/Nurse');
-const bcrypt = require('bcryptjs');
+const Nurse   = require('../models/Nurse');
+const Patient = require('../models/Patient');
+const Alert   = require('../models/Alert');
+const bcrypt  = require('bcryptjs');
 
 // @desc    Get all nurses
 // @route   GET /api/nurses
 // @access  Private
 const getNurses = async (req, res) => {
   try {
-    const { ward, isActive } = req.query;
+    const { search, ward, shift } = req.query;
     const filter = {};
 
-    if (ward) filter.ward = ward;
-    if (isActive !== undefined) filter.isActive = isActive === 'true';
+    if (ward)  filter.ward  = ward;
+    if (shift) filter.shift = shift;
+    if (search) {
+      filter.$or = [
+        { name:  { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { ward:  { $regex: search, $options: 'i' } },
+      ];
+    }
 
     const nurses = await Nurse.find(filter)
-      .populate('assignedPatients', 'name ward bedNumber status')
-      .sort({ createdAt: -1 });
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Attach assigned patients count to each nurse
+    const nursesWithData = await Promise.all(
+      nurses.map(async (n) => {
+        const assignedPatients = await Patient.find({
+          assignedNurse: n._id,
+          isActive:      true,
+        })
+          .select('name ward bedNumber status')
+          .lean();
+
+        return { ...n, assignedPatients };
+      })
+    );
 
     res.status(200).json({
       success: true,
-      count: nurses.length,
-      nurses,
+      count: nursesWithData.length,
+      nurses: nursesWithData,
     });
   } catch (error) {
+    console.error('getNurses error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get single nurse
+// @desc    Get single nurse with full details
 // @route   GET /api/nurses/:id
 // @access  Private
 const getNurse = async (req, res) => {
   try {
     const nurse = await Nurse.findById(req.params.id)
-      .populate('assignedPatients', 'name ward bedNumber status activeSession');
+      .select('-password')
+      .lean();
 
     if (!nurse) {
-      return res.status(404).json({
-        success: false,
-        message: 'Nurse not found',
-      });
+      return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
-    res.status(200).json({ success: true, nurse });
+    // Get assigned patients
+    const assignedPatients = await Patient.find({
+      assignedNurse: nurse._id,
+    })
+      .select('name ward bedNumber status diagnosis')
+      .lean();
+
+    // Get alerts resolved by this nurse
+    const alertHistory = await Alert.find({
+      resolvedBy: nurse._id,
+      status:     'resolved',
+    })
+      .sort({ resolvedAt: -1 })
+      .limit(20)
+      .lean();
+
+    // Get alerts acknowledged by this nurse
+    const acknowledgedAlerts = await Alert.find({
+      acknowledgedBy: nurse._id,
+    })
+      .sort({ acknowledgedAt: -1 })
+      .limit(10)
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      ...nurse,
+      assignedPatients,
+      alertHistory,
+      acknowledgedAlerts,
+      totalResolved:     alertHistory.length,
+      totalAcknowledged: acknowledgedAlerts.length,
+    });
   } catch (error) {
+    console.error('getNurse error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Create nurse account
+// @desc    Create nurse
 // @route   POST /api/nurses
 // @access  Private
 const createNurse = async (req, res) => {
   try {
-    const { name, phone, password, ward, shift } = req.body;
+    const { name, phone, ward, shift, password } = req.body;
 
-    // Check if nurse already exists
+    if (!name || !phone || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, phone, and password are required.',
+      });
+    }
+
+    // Check duplicate phone
     const existing = await Nurse.findOne({ phone });
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: 'Nurse with this phone number already exists',
+        message: `A nurse with phone "${phone}" already exists.`,
       });
     }
 
-    // Hash password manually
-    const hashedPassword = bcrypt.hashSync(password, 10);
+    // Hash password
+    const salt           = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
     const nurse = await Nurse.create({
       name,
       phone,
+      ward:     ward  || '',
+      shift:    shift || 'Morning',
       password: hashedPassword,
-      ward,
-      shift,
     });
 
-    // Remove password from response
-    const nurseResponse = nurse.toObject();
-    delete nurseResponse.password;
+    const nurseObj = nurse.toObject();
+    delete nurseObj.password;
 
-    res.status(201).json({
-      success: true,
-      message: 'Nurse account created successfully',
-      nurse: nurseResponse,
-    });
+    res.status(201).json({ success: true, nurse: nurseObj });
   } catch (error) {
+    console.error('createNurse error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -94,34 +153,27 @@ const createNurse = async (req, res) => {
 // @access  Private
 const updateNurse = async (req, res) => {
   try {
-    // Prevent password update through this route
+    // Never update password through this route
     delete req.body.password;
 
     const nurse = await Nurse.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
-    );
+    ).select('-password');
 
     if (!nurse) {
-      return res.status(404).json({
-        success: false,
-        message: 'Nurse not found',
-      });
+      return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Nurse updated successfully',
-      nurse,
-    });
+    res.status(200).json({ success: true, nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
 // @desc    Deactivate nurse
-// @route   PUT /api/nurses/:id/deactivate
+// @route   PATCH /api/nurses/:id/deactivate
 // @access  Private
 const deactivateNurse = async (req, res) => {
   try {
@@ -129,49 +181,46 @@ const deactivateNurse = async (req, res) => {
       req.params.id,
       { isActive: false },
       { new: true }
-    );
+    ).select('-password');
 
     if (!nurse) {
-      return res.status(404).json({
-        success: false,
-        message: 'Nurse not found',
-      });
+      return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Nurse deactivated successfully',
-      nurse,
-    });
+    res.status(200).json({ success: true, message: 'Nurse deactivated', nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
 // @desc    Assign patients to nurse
-// @route   PUT /api/nurses/:id/assign-patients
+// @route   POST /api/nurses/:id/assign-patients
 // @access  Private
 const assignPatients = async (req, res) => {
   try {
     const { patientIds } = req.body;
 
-    const nurse = await Nurse.findByIdAndUpdate(
-      req.params.id,
-      { assignedPatients: patientIds },
-      { new: true }
-    ).populate('assignedPatients', 'name ward bedNumber');
-
-    if (!nurse) {
-      return res.status(404).json({
+    if (!Array.isArray(patientIds)) {
+      return res.status(400).json({
         success: false,
-        message: 'Nurse not found',
+        message: 'patientIds must be an array.',
       });
     }
 
+    const nurse = await Nurse.findById(req.params.id);
+    if (!nurse) {
+      return res.status(404).json({ success: false, message: 'Nurse not found' });
+    }
+
+    // Update each patient's assignedNurse field
+    await Patient.updateMany(
+      { _id: { $in: patientIds } },
+      { assignedNurse: nurse._id }
+    );
+
     res.status(200).json({
       success: true,
-      message: 'Patients assigned successfully',
-      nurse,
+      message: `${patientIds.length} patient(s) assigned to ${nurse.name}`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
