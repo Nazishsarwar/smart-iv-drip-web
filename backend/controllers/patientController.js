@@ -2,10 +2,8 @@ const Patient = require('../models/Patient');
 const Device  = require('../models/Device');
 const Session = require('../models/Session');
 const Reading = require('../models/Reading');
+const Nurse   = require('../models/Nurse');
 
-// @desc    Get all patients
-// @route   GET /api/patients
-// @access  Private
 const getPatients = async (req, res) => {
   try {
     const { search, status, ward, hasActiveSession } = req.query;
@@ -21,17 +19,14 @@ const getPatients = async (req, res) => {
       ];
     }
 
-    // Filter by active session
     if (hasActiveSession === 'true') {
       filter.activeSession = { $ne: null };
     }
 
     let patients = await Patient.find(filter)
-      .populate('activeSession')
       .sort({ createdAt: -1 })
       .lean();
 
-    // Attach device + latest reading to each patient
     patients = await Promise.all(
       patients.map(async (p) => {
         let latestReading = null;
@@ -39,8 +34,7 @@ const getPatients = async (req, res) => {
         let sessionData   = null;
 
         if (p.activeSession) {
-          // Populate device from session
-          sessionData = await Session.findById(p.activeSession._id || p.activeSession)
+          sessionData = await Session.findById(p.activeSession)
             .populate('device', 'deviceId location')
             .populate('nurse',  'name')
             .lean();
@@ -53,7 +47,6 @@ const getPatients = async (req, res) => {
           }
         }
 
-        // Determine live status
         let liveStatus = p.status || 'active';
         if (sessionData && latestReading) {
           if      (latestReading.volumeMl < 10)  liveStatus = 'critical';
@@ -64,7 +57,7 @@ const getPatients = async (req, res) => {
         return {
           ...p,
           status:        liveStatus,
-          activeSession: sessionData || p.activeSession,
+          activeSession: sessionData || null,
           activeDevice,
           latestReading,
           chartData: [],
@@ -79,9 +72,6 @@ const getPatients = async (req, res) => {
   }
 };
 
-// @desc    Get single patient with full details
-// @route   GET /api/patients/:id
-// @access  Private
 const getPatient = async (req, res) => {
   try {
     const patient = await Patient.findById(req.params.id).lean();
@@ -121,14 +111,12 @@ const getPatient = async (req, res) => {
       }
     }
 
-    // Session history
     const sessions = await Session.find({ patient: patient._id })
       .sort({ createdAt: -1 })
       .populate('device', 'deviceId')
       .populate('nurse',  'name')
       .lean();
 
-    // Live status
     let status = patient.status || 'active';
     if (activeSession && latestReading) {
       if      (latestReading.volumeMl < 10)  status = 'critical';
@@ -152,9 +140,6 @@ const getPatient = async (req, res) => {
   }
 };
 
-// @desc    Create patient
-// @route   POST /api/patients
-// @access  Private
 const createPatient = async (req, res) => {
   try {
     const { name, age, gender, ward, bedNumber, diagnosis, phone } = req.body;
@@ -176,9 +161,6 @@ const createPatient = async (req, res) => {
   }
 };
 
-// @desc    Update patient
-// @route   PUT /api/patients/:id
-// @access  Private
 const updatePatient = async (req, res) => {
   try {
     const patient = await Patient.findByIdAndUpdate(
@@ -193,9 +175,6 @@ const updatePatient = async (req, res) => {
   }
 };
 
-// @desc    Delete patient
-// @route   DELETE /api/patients/:id
-// @access  Private
 const deletePatient = async (req, res) => {
   try {
     const patient = await Patient.findByIdAndDelete(req.params.id);
@@ -208,9 +187,6 @@ const deletePatient = async (req, res) => {
   }
 };
 
-// @desc    Start IV session
-// @route   POST /api/patients/:id/sessions/start
-// @access  Private
 const startSession = async (req, res) => {
   try {
     const { deviceId, nurseId, prescribedRate, totalVolume, fluidType } = req.body;
@@ -227,7 +203,6 @@ const startSession = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Patient not found' });
     }
 
-    // Check no active session already
     if (patient.activeSession) {
       return res.status(400).json({
         success: false,
@@ -235,7 +210,6 @@ const startSession = async (req, res) => {
       });
     }
 
-    // Find and update device
     let deviceDoc = null;
     if (deviceId) {
       deviceDoc = await Device.findById(deviceId);
@@ -247,11 +221,10 @@ const startSession = async (req, res) => {
       }
     }
 
-    // Create session
     const session = await Session.create({
       patient:        patient._id,
-      device:         deviceDoc?._id  || null,
-      nurse:          nurseId         || null,
+      device:         deviceDoc?._id || null,
+      nurse:          nurseId        || null,
       prescribedRate: Number(prescribedRate),
       totalVolume:    Number(totalVolume),
       fluidType:      fluidType || 'Normal Saline',
@@ -259,7 +232,6 @@ const startSession = async (req, res) => {
       startTime:      new Date(),
     });
 
-    // Update device — mark online and link to patient + session
     if (deviceDoc) {
       await Device.findByIdAndUpdate(deviceDoc._id, {
         status:          'online',
@@ -269,11 +241,17 @@ const startSession = async (req, res) => {
       });
     }
 
-    // Update patient — store activeSession reference
     await Patient.findByIdAndUpdate(patient._id, {
       activeSession: session._id,
       status:        'normal',
+      ...(nurseId ? { assignedNurse: nurseId } : {}),
     });
+
+    if (nurseId) {
+      await Nurse.findByIdAndUpdate(nurseId, {
+        $addToSet: { assignedPatients: patient._id },
+      });
+    }
 
     const io = req.app.get('io');
     if (io) io.emit('session:started', { sessionId: session._id, patientId: patient._id });
@@ -290,18 +268,15 @@ const startSession = async (req, res) => {
   }
 };
 
-// @desc    End IV session
-// @route   POST /api/patients/:id/sessions/:sessionId/end
-// @access  Private
 const endSession = async (req, res) => {
   try {
     const { reason, note } = req.body;
     const { id, sessionId } = req.params;
 
     const session = await Session.findOne({
-      _id:    sessionId,
+      _id:     sessionId,
       patient: id,
-      status: 'active',
+      status:  'active',
     });
 
     if (!session) {
@@ -311,14 +286,12 @@ const endSession = async (req, res) => {
       });
     }
 
-    // End session
     session.status    = 'completed';
     session.endTime   = new Date();
     session.endReason = reason || 'completed';
     session.endNote   = note   || '';
     await session.save();
 
-    // Free device
     if (session.device) {
       await Device.findByIdAndUpdate(session.device, {
         status:          'idle',
@@ -327,7 +300,6 @@ const endSession = async (req, res) => {
       });
     }
 
-    // Clear patient activeSession
     await Patient.findByIdAndUpdate(id, {
       activeSession: null,
       status:        'inactive',
