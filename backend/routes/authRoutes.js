@@ -10,5 +10,10 @@ router.post('/login', login);
 // Protected routes
 router.get('/me', protect, getMe);
 router.post('/fcm-token', protect, registerFcmToken);
+const { protect } = require('../middleware/authMiddleware');
+
+// Add this route to your existing authRoutes.js
+router.post('/change-password', protect, changePassword);
+
 
 module.exports = router;
