@@ -1,4 +1,4 @@
-const Nurse   = require('../models/Nurse');
+\const Nurse   = require('../models/Nurse');
 const Patient = require('../models/Patient');
 const Alert   = require('../models/Alert');
 const bcrypt  = require('bcryptjs');
