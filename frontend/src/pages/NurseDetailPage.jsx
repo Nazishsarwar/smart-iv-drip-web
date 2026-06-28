@@ -30,8 +30,8 @@ export default function NurseDetailPage() {
   useEffect(() => {
     getNurseByIdApi(id)
       .then((res) => {
-        // Backend now returns { success, nurse: { ...data } }
-        const data = res.data?.nurse || res.data;
+        // Backend spreads nurse fields directly into response
+        const data = res.data;
         setNurse(data);
       })
       .catch((err) => {
@@ -55,13 +55,8 @@ export default function NurseDetailPage() {
     <div className="text-center py-12 text-text-secondary">Nurse not found.</div>
   );
 
-  const assignedPatients = Array.isArray(nurse.assignedPatients)
-    ? nurse.assignedPatients
-    : [];
-
-  const alertHistory = Array.isArray(nurse.alertHistory)
-    ? nurse.alertHistory
-    : [];
+  const assignedPatients  = nurse.assignedPatients  || [];
+  const alertHistory      = nurse.alertHistory      || [];
 
   return (
     <div className="space-y-6">
@@ -98,39 +93,19 @@ export default function NurseDetailPage() {
         </div>
       </div>
 
-      {/* Stats Row */}
+      {/* Info + Stats row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
-          {
-            label: 'Patients Assigned',
-            value: assignedPatients.length,
-            icon:  Users,
-            color: 'text-primary',
-          },
-          {
-            label: 'Alerts Resolved',
-            value: nurse.totalResolved || 0,
-            icon:  CheckCircle,
-            color: 'text-status-ok',
-          },
-          {
-            label: 'Alerts Acknowledged',
-            value: nurse.totalAcknowledged || 0,
-            icon:  AlertTriangle,
-            color: 'text-status-warn',
-          },
+          { label: 'Patients Assigned', value: assignedPatients.length, icon: Users,        color: 'text-primary' },
+          { label: 'Alerts Resolved',   value: nurse.totalResolved || 0, icon: CheckCircle,  color: 'text-status-ok' },
+          { label: 'Alerts Acknowledged', value: nurse.totalAcknowledged || 0, icon: AlertTriangle, color: 'text-status-warn' },
         ].map(({ label, value, icon: Icon, color }) => (
-          <div
-            key={label}
-            className="bg-white rounded-card border border-border shadow-sm p-4 flex items-center gap-4"
-          >
+          <div key={label} className="bg-white rounded-card border border-border shadow-sm p-4 flex items-center gap-4">
             <div className="bg-surface-alt rounded-control p-3">
               <Icon className={`w-5 h-5 ${color}`} />
             </div>
             <div>
-              <p className="font-display font-bold text-2xl text-text-primary tabular-nums">
-                {value}
-              </p>
+              <p className="font-display font-bold text-2xl text-text-primary tabular-nums">{value}</p>
               <p className="text-xs text-text-secondary">{label}</p>
             </div>
           </div>
@@ -144,16 +119,16 @@ export default function NurseDetailPage() {
           <h3 className="font-display font-600 text-text-primary text-sm mb-4">
             Nurse Information
           </h3>
-          <dl className="space-y-0 divide-y divide-border">
+          <dl className="space-y-3">
             {[
               { icon: User,   label: 'Full Name', value: nurse.name  || '—' },
               { icon: Phone,  label: 'Phone',     value: nurse.phone || '—' },
               { icon: MapPin, label: 'Ward',      value: nurse.ward  || '—' },
               { icon: Clock,  label: 'Shift',     value: nurse.shift || '—' },
             ].map(({ icon: Icon, label, value }) => (
-              <div key={label} className="flex items-center gap-3 py-3">
+              <div key={label} className="flex items-center gap-3">
                 <Icon className="w-4 h-4 text-text-secondary flex-shrink-0" />
-                <div className="flex justify-between flex-1">
+                <div className="flex justify-between flex-1 border-b border-border pb-2">
                   <dt className="text-sm text-text-secondary">{label}</dt>
                   <dd className="text-sm font-medium text-text-primary">{value}</dd>
                 </div>
@@ -175,8 +150,8 @@ export default function NurseDetailPage() {
             <div className="text-center py-6">
               <Users className="w-8 h-8 text-text-secondary mx-auto mb-2" />
               <p className="text-text-secondary text-sm">No patients assigned.</p>
-              <p className="text-xs text-text-secondary mt-1">
-                Use POST /api/nurses/:id/assign-patients to assign.
+              <p className="text-text-secondary text-xs mt-1">
+                Assign patients via the Patients page.
               </p>
             </div>
           ) : (
@@ -193,10 +168,10 @@ export default function NurseDetailPage() {
                       {p.ward || '—'} · Bed {p.bedNumber || '—'}
                     </p>
                     {p.diagnosis && (
-                      <p className="text-xs text-text-secondary italic">{p.diagnosis}</p>
+                      <p className="text-xs text-text-secondary">{p.diagnosis}</p>
                     )}
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded-full capitalize flex-shrink-0 ${
+                  <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${
                     patientStatusColor[p.status] || patientStatusColor.inactive
                   }`}>
                     {p.status || 'inactive'}
@@ -225,16 +200,13 @@ export default function NurseDetailPage() {
             <div className="text-center py-8">
               <CheckCircle className="w-8 h-8 text-text-secondary mx-auto mb-2" />
               <p className="text-text-secondary text-sm">No alert responses recorded yet.</p>
-              <p className="text-xs text-text-secondary mt-1">
+              <p className="text-text-secondary text-xs mt-1">
                 Alerts resolved by this nurse will appear here.
               </p>
             </div>
           ) : (
             alertHistory.map((a) => (
-              <div
-                key={a._id}
-                className="px-5 py-3 flex items-center justify-between text-sm"
-              >
+              <div key={a._id} className="px-5 py-3 flex items-center justify-between text-sm">
                 <div>
                   <p className="text-text-primary font-medium capitalize">
                     {a.type?.replace(/_/g, ' ') || 'Alert'}

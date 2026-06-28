@@ -3,10 +3,14 @@ const Patient = require('../models/Patient');
 const Alert   = require('../models/Alert');
 const bcrypt  = require('bcryptjs');
 
+// @desc    Get all nurses
+// @route   GET /api/nurses
+// @access  Private
 const getNurses = async (req, res) => {
   try {
     const { search, ward, shift } = req.query;
     const filter = {};
+
     if (ward)  filter.ward  = ward;
     if (shift) filter.shift = shift;
     if (search) {
@@ -22,24 +26,24 @@ const getNurses = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    // Attach assigned patients count to each nurse
     const nursesWithData = await Promise.all(
       nurses.map(async (n) => {
         const assignedPatients = await Patient.find({
-          $or: [
-            { assignedNurse: n._id },
-            { _id: { $in: n.assignedPatients || [] } },
-          ],
+          assignedNurse: n._id,
+          isActive:      true,
         })
           .select('name ward bedNumber status')
           .lean();
+
         return { ...n, assignedPatients };
       })
     );
 
     res.status(200).json({
       success: true,
-      count:   nursesWithData.length,
-      nurses:  nursesWithData,
+      count: nursesWithData.length,
+      nurses: nursesWithData,
     });
   } catch (error) {
     console.error('getNurses error:', error);
@@ -47,6 +51,9 @@ const getNurses = async (req, res) => {
   }
 };
 
+// @desc    Get single nurse with full details
+// @route   GET /api/nurses/:id
+// @access  Private
 const getNurse = async (req, res) => {
   try {
     const nurse = await Nurse.findById(req.params.id)
@@ -57,15 +64,14 @@ const getNurse = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
+    // Get assigned patients
     const assignedPatients = await Patient.find({
-      $or: [
-        { assignedNurse: nurse._id },
-        { _id: { $in: nurse.assignedPatients || [] } },
-      ],
+      assignedNurse: nurse._id,
     })
-      .select('name ward bedNumber status diagnosis activeSession')
+      .select('name ward bedNumber status diagnosis')
       .lean();
 
+    // Get alerts resolved by this nurse
     const alertHistory = await Alert.find({
       resolvedBy: nurse._id,
       status:     'resolved',
@@ -74,6 +80,7 @@ const getNurse = async (req, res) => {
       .limit(20)
       .lean();
 
+    // Get alerts acknowledged by this nurse
     const acknowledgedAlerts = await Alert.find({
       acknowledgedBy: nurse._id,
     })
@@ -83,14 +90,12 @@ const getNurse = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      nurse: {
-        ...nurse,
-        assignedPatients,
-        alertHistory,
-        acknowledgedAlerts,
-        totalResolved:     alertHistory.length,
-        totalAcknowledged: acknowledgedAlerts.length,
-      },
+      ...nurse,
+      assignedPatients,
+      alertHistory,
+      acknowledgedAlerts,
+      totalResolved:     alertHistory.length,
+      totalAcknowledged: acknowledgedAlerts.length,
     });
   } catch (error) {
     console.error('getNurse error:', error);
@@ -98,6 +103,9 @@ const getNurse = async (req, res) => {
   }
 };
 
+// @desc    Create nurse
+// @route   POST /api/nurses
+// @access  Private
 const createNurse = async (req, res) => {
   try {
     const { name, phone, ward, shift, password } = req.body;
@@ -109,14 +117,16 @@ const createNurse = async (req, res) => {
       });
     }
 
+    // Check duplicate phone
     const existing = await Nurse.findOne({ phone });
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: 'A nurse with this phone already exists.',
+        message: `A nurse with phone "${phone}" already exists.`,
       });
     }
 
+    // Hash password
     const salt           = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
@@ -138,9 +148,14 @@ const createNurse = async (req, res) => {
   }
 };
 
+// @desc    Update nurse
+// @route   PUT /api/nurses/:id
+// @access  Private
 const updateNurse = async (req, res) => {
   try {
+    // Never update password through this route
     delete req.body.password;
+
     const nurse = await Nurse.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -150,12 +165,16 @@ const updateNurse = async (req, res) => {
     if (!nurse) {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
+
     res.status(200).json({ success: true, nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// @desc    Deactivate nurse
+// @route   PATCH /api/nurses/:id/deactivate
+// @access  Private
 const deactivateNurse = async (req, res) => {
   try {
     const nurse = await Nurse.findByIdAndUpdate(
@@ -167,12 +186,16 @@ const deactivateNurse = async (req, res) => {
     if (!nurse) {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
+
     res.status(200).json({ success: true, message: 'Nurse deactivated', nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// @desc    Assign patients to nurse
+// @route   POST /api/nurses/:id/assign-patients
+// @access  Private
 const assignPatients = async (req, res) => {
   try {
     const { patientIds } = req.body;
@@ -189,18 +212,15 @@ const assignPatients = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
+    // Update each patient's assignedNurse field
     await Patient.updateMany(
       { _id: { $in: patientIds } },
       { assignedNurse: nurse._id }
     );
 
-    await Nurse.findByIdAndUpdate(nurse._id, {
-      $addToSet: { assignedPatients: { $each: patientIds } },
-    });
-
     res.status(200).json({
       success: true,
-      message: patientIds.length + ' patient(s) assigned to ' + nurse.name,
+      message: `${patientIds.length} patient(s) assigned to ${nurse.name}`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
