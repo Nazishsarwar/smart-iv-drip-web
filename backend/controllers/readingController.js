@@ -1,151 +1,198 @@
-// backend/controllers/readingController.js
 const Reading = require('../models/Reading');
-const Device = require('../models/Device');
+const Device  = require('../models/Device');
 const Session = require('../models/Session');
-const Alert = require('../models/Alert');
-const Nurse = require('../models/Nurse');
+const Patient = require('../models/Patient');
+const Alert   = require('../models/Alert');
 
-const THRESHOLDS = {
-  LOW_FLUID_ML: 50,
-  BATTERY_LOW_PCT: 20,
-  DRIP_STOPPED_DPM: 0,
-};
-
-const receiveReading = async (req, res) => {
+// @desc    Receive reading from ESP32
+// @route   POST /api/readings
+// @access  Public (no auth — called by hardware)
+const createReading = async (req, res) => {
   try {
-    console.log('🔵 receiveReading hit — body:', req.body);
-
     const { deviceId, dropsPerMin, volumeMl, batteryPct } = req.body;
 
     if (!deviceId) {
-      return res.status(400).json({ success: false, message: 'deviceId is required' });
+      return res.status(400).json({ success: false, message: 'deviceId is required.' });
     }
 
+    // ── Find device by string deviceId ──
     const device = await Device.findOne({ deviceId });
     if (!device) {
-      return res.status(404).json({ success: false, message: 'Device not registered in system' });
+      return res.status(404).json({
+        success: false,
+        message: `Device "${deviceId}" not found. Register it first.`,
+      });
     }
 
-    await Device.findByIdAndUpdate(device._id, {
-      status: 'online',
-      batteryPct: batteryPct || device.batteryPct,
-      lastSeenAt: new Date(),
-    });
-
-    const reading = await Reading.create({
+    // ── Find active session for this device ──
+    const session = await Session.findOne({
       device: device._id,
-      session: device.assignedSession || null,
-      patient: device.assignedPatient || null,
-      dropsPerMin: dropsPerMin || 0,
-      volumeMl: volumeMl || 0,
-      batteryPct: batteryPct || 0,
-      recordedAt: new Date(),
+      status: 'active',
+    }).populate('patient', 'name ward bedNumber');
+
+    // ── Save the reading ──
+    const reading = await Reading.create({
+      device:      device._id,
+      session:     session?._id    || null,
+      patient:     session?.patient?._id || null,
+      deviceId,
+      dropsPerMin: Number(dropsPerMin) || 0,
+      volumeMl:    Number(volumeMl)    || 0,
+      batteryPct:  Number(batteryPct)  || 0,
+      recordedAt:  new Date(),
     });
 
-    console.log(`[Reading] Device: ${deviceId} | Volume: ${volumeMl}ml | Drops: ${dropsPerMin}dpm`);
+    // ── Update device last seen + battery ──
+    await Device.findByIdAndUpdate(device._id, {
+      lastSeen:   new Date(),
+      batteryPct: Number(batteryPct) || device.batteryPct,
+      status:     'online',
+    });
 
+    // ── Get io for emitting events ──
     const io = req.app.get('io');
 
+    // ── Emit reading update to all connected browsers ──
     if (io) {
       io.emit('reading:update', {
         deviceId,
-        patientId: device.assignedPatient,
-        sessionId: device.assignedSession,
-        dropsPerMin,
-        volumeMl,
-        batteryPct,
-        recordedAt: reading.recordedAt,
-      });
-      console.log(`[Socket.IO] Emitting reading:update`);
-    } else {
-      console.warn('[Socket.IO] io not found on app');
-    }
-
-    if (volumeMl !== undefined && volumeMl <= THRESHOLDS.LOW_FLUID_ML && volumeMl > 0) {
-      await createAlertIfNotExists({
-        type: 'low_fluid',
-        severity: 'warning',
-        device: device._id,
-        patient: device.assignedPatient,
-        session: device.assignedSession,
-        message: `Low fluid warning — only ${volumeMl}ml remaining for device ${deviceId}`,
-        io,
+        dropsPerMin: reading.dropsPerMin,
+        volumeMl:    reading.volumeMl,
+        batteryPct:  reading.batteryPct,
+        patientId:   session?.patient?._id || null,
+        sessionId:   session?._id          || null,
+        recordedAt:  reading.recordedAt,
       });
     }
 
-    if (dropsPerMin !== undefined && dropsPerMin === THRESHOLDS.DRIP_STOPPED_DPM) {
-      await createAlertIfNotExists({
-        type: 'drip_stopped',
-        severity: 'critical',
-        device: device._id,
-        patient: device.assignedPatient,
-        session: device.assignedSession,
-        message: `Drip stopped — no drops detected for device ${deviceId}`,
-        io,
-      });
+    // ── Alert threshold checks ──────────────────────────────
+    if (session && session.patient) {
+      const patientName = session.patient.name  || 'Unknown';
+      const ward        = session.patient.ward  || 'Unknown';
+      const vol         = Number(volumeMl)  || 0;
+      const rate        = Number(dropsPerMin) || 0;
+      const prescribed  = session.prescribedRate || 0;
+
+      // Helper — check if same alert type already active for this session
+      const alertExists = async (type) => {
+        const existing = await Alert.findOne({
+          type,
+          session: session._id,
+          status:  { $in: ['active', 'acknowledged'] },
+        });
+        return !!existing;
+      };
+
+      // Helper — create alert + emit socket event
+      const createAndEmit = async (type, severity, message) => {
+        const alert = await Alert.create({
+          type,
+          severity,
+          status:      'active',
+          message,
+          patientName,
+          ward,
+          deviceId,
+          patient: session.patient._id,
+          device:  device._id,
+          session: session._id,
+        });
+
+        if (io) io.emit('alert:new', alert);
+        console.log(`🚨 Alert created: ${type} for ${patientName}`);
+        return alert;
+      };
+
+      // 1 — Critical low fluid (< 10ml)
+      if (vol < 10 && vol >= 0) {
+        const exists = await alertExists('low_fluid');
+        if (!exists) {
+          await createAndEmit(
+            'low_fluid',
+            'critical',
+            `Critical: Only ${vol}ml remaining for ${patientName}. Replace IV bag immediately.`
+          );
+          // Update patient status to critical
+          await Patient.findByIdAndUpdate(session.patient._id, { status: 'critical' });
+        }
+      }
+
+      // 2 — Warning low fluid (< 50ml but >= 10ml)
+      else if (vol < 50 && vol >= 10) {
+        const exists = await alertExists('low_fluid');
+        if (!exists) {
+          await createAndEmit(
+            'low_fluid',
+            'warning',
+            `Warning: ${vol}ml remaining for ${patientName}. Prepare replacement bag.`
+          );
+          await Patient.findByIdAndUpdate(session.patient._id, { status: 'warning' });
+        }
+      }
+
+      // 3 — High drip rate (> prescribed + 20%)
+      else if (prescribed > 0 && rate > prescribed * 1.2) {
+        const exists = await alertExists('high_rate');
+        if (!exists) {
+          await createAndEmit(
+            'high_rate',
+            'warning',
+            `Drip rate ${rate} drops/min exceeds prescribed ${prescribed} drops/min for ${patientName}.`
+          );
+        }
+      }
+
+      // 4 — Low drip rate (< prescribed - 20%)
+      else if (prescribed > 0 && rate < prescribed * 0.8 && rate > 0) {
+        const exists = await alertExists('low_rate');
+        if (!exists) {
+          await createAndEmit(
+            'low_rate',
+            'warning',
+            `Drip rate ${rate} drops/min is below prescribed ${prescribed} drops/min for ${patientName}.`
+          );
+        }
+      }
+
+      // 5 — Drip stopped (rate = 0 but session active)
+      else if (rate === 0) {
+        const exists = await alertExists('drip_stopped');
+        if (!exists) {
+          await createAndEmit(
+            'drip_stopped',
+            'critical',
+            `IV drip has stopped for ${patientName}. Immediate attention required.`
+          );
+        }
+      }
     }
 
-    if (batteryPct !== undefined && batteryPct <= THRESHOLDS.BATTERY_LOW_PCT) {
-      await createAlertIfNotExists({
-        type: 'battery_low',
-        severity: 'warning',
-        device: device._id,
-        patient: device.assignedPatient,
-        session: device.assignedSession,
-        message: `Battery low — ${batteryPct}% remaining for device ${deviceId}`,
-        io,
-      });
-    }
-
-    res.status(200).json({ success: true, message: 'Reading received', reading });
-
+    res.status(201).json({
+      success: true,
+      message: 'Reading received',
+      reading,
+    });
   } catch (error) {
-    console.error('🔴 Reading error:', error.message);
+    console.error('Reading error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-const createAlertIfNotExists = async ({ type, severity, device, patient, session, message, io }) => {
-  try {
-    const existing = await Alert.findOne({
-      type,
-      device,
-      status: { $in: ['unacknowledged', 'acknowledged'] },
-    });
-
-    if (existing) return;
-
-    const alert = await Alert.create({
-      type,
-      severity,
-      device,
-      patient,
-      session,
-      message,
-      status: 'unacknowledged',
-    });
-
-    if (io) {
-      io.emit('alert:new', { alert });
-      console.log(`[Socket.IO] Emitting alert:new`);
-    }
-
-    console.log(`🚨 Alert created: ${type} — ${message}`);
-  } catch (err) {
-    console.error('Alert creation error:', err.message);
-  }
-};
-
+// @desc    Get readings for a device
+// @route   GET /api/readings
+// @access  Private
 const getReadings = async (req, res) => {
   try {
-    const { deviceId, sessionId, limit = 50 } = req.query;
+    const { deviceId, sessionId, limit } = req.query;
     const filter = {};
-    if (deviceId) filter.device = deviceId;
-    if (sessionId) filter.session = sessionId;
+
+    if (deviceId)  filter.deviceId = deviceId;
+    if (sessionId) filter.session  = sessionId;
 
     const readings = await Reading.find(filter)
-      .sort({ recordedAt: -1 })
-      .limit(parseInt(limit));
+      .sort({ createdAt: -1 })
+      .limit(Number(limit) || 50)
+      .lean();
 
     res.status(200).json({ success: true, count: readings.length, readings });
   } catch (error) {
@@ -153,4 +200,4 @@ const getReadings = async (req, res) => {
   }
 };
 
-module.exports = { receiveReading, getReadings };
+module.exports = { createReading, getReadings };

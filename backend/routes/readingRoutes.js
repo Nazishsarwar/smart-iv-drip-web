@@ -1,13 +1,12 @@
-// backend/routes/readingRoutes.js
 const express = require('express');
-const router = express.Router();
-const { receiveReading, getReadings } = require('../controllers/readingController');
+const router  = express.Router();
+const { createReading, getReadings } = require('../controllers/readingController');
 const { protect } = require('../middleware/authMiddleware');
 
-// Public route — called by ESP32 hardware
-router.post('/', receiveReading);
+// POST — no auth (called by ESP32 hardware)
+router.post('/', createReading);
 
-// Protected route — for frontend to fetch readings
+// GET — protected (called by frontend)
 router.get('/', protect, getReadings);
 
 module.exports = router;
