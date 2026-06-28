@@ -1,16 +1,12 @@
-\const Nurse   = require('../models/Nurse');
+const Nurse   = require('../models/Nurse');
 const Patient = require('../models/Patient');
 const Alert   = require('../models/Alert');
 const bcrypt  = require('bcryptjs');
 
-// @desc    Get all nurses
-// @route   GET /api/nurses
-// @access  Private
 const getNurses = async (req, res) => {
   try {
     const { search, ward, shift } = req.query;
     const filter = {};
-
     if (ward)  filter.ward  = ward;
     if (shift) filter.shift = shift;
     if (search) {
@@ -26,8 +22,6 @@ const getNurses = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Attach assigned patients to each nurse
-    // Check BOTH: Patient.assignedNurse field AND Nurse.assignedPatients array
     const nursesWithData = await Promise.all(
       nurses.map(async (n) => {
         const assignedPatients = await Patient.find({
@@ -38,7 +32,6 @@ const getNurses = async (req, res) => {
         })
           .select('name ward bedNumber status')
           .lean();
-
         return { ...n, assignedPatients };
       })
     );
@@ -54,9 +47,6 @@ const getNurses = async (req, res) => {
   }
 };
 
-// @desc    Get single nurse with full details
-// @route   GET /api/nurses/:id
-// @access  Private
 const getNurse = async (req, res) => {
   try {
     const nurse = await Nurse.findById(req.params.id)
@@ -67,7 +57,6 @@ const getNurse = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
-    // Get assigned patients — check BOTH fields
     const assignedPatients = await Patient.find({
       $or: [
         { assignedNurse: nurse._id },
@@ -77,7 +66,6 @@ const getNurse = async (req, res) => {
       .select('name ward bedNumber status diagnosis activeSession')
       .lean();
 
-    // Get alert history resolved by this nurse
     const alertHistory = await Alert.find({
       resolvedBy: nurse._id,
       status:     'resolved',
@@ -86,7 +74,6 @@ const getNurse = async (req, res) => {
       .limit(20)
       .lean();
 
-    // Get alerts acknowledged by this nurse
     const acknowledgedAlerts = await Alert.find({
       acknowledgedBy: nurse._id,
     })
@@ -94,7 +81,6 @@ const getNurse = async (req, res) => {
       .limit(10)
       .lean();
 
-    // Return nurse data with all populated fields
     res.status(200).json({
       success: true,
       nurse: {
@@ -112,9 +98,6 @@ const getNurse = async (req, res) => {
   }
 };
 
-// @desc    Create nurse
-// @route   POST /api/nurses
-// @access  Private
 const createNurse = async (req, res) => {
   try {
     const { name, phone, ward, shift, password } = req.body;
@@ -130,7 +113,7 @@ const createNurse = async (req, res) => {
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: `A nurse with phone "${phone}" already exists.`,
+        message: 'A nurse with this phone already exists.',
       });
     }
 
@@ -155,13 +138,9 @@ const createNurse = async (req, res) => {
   }
 };
 
-// @desc    Update nurse
-// @route   PUT /api/nurses/:id
-// @access  Private
 const updateNurse = async (req, res) => {
   try {
     delete req.body.password;
-
     const nurse = await Nurse.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -171,16 +150,12 @@ const updateNurse = async (req, res) => {
     if (!nurse) {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
-
     res.status(200).json({ success: true, nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Deactivate nurse
-// @route   PATCH /api/nurses/:id/deactivate
-// @access  Private
 const deactivateNurse = async (req, res) => {
   try {
     const nurse = await Nurse.findByIdAndUpdate(
@@ -192,16 +167,12 @@ const deactivateNurse = async (req, res) => {
     if (!nurse) {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
-
     res.status(200).json({ success: true, message: 'Nurse deactivated', nurse });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Assign patients to nurse
-// @route   POST /api/nurses/:id/assign-patients
-// @access  Private
 const assignPatients = async (req, res) => {
   try {
     const { patientIds } = req.body;
@@ -218,20 +189,18 @@ const assignPatients = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Nurse not found' });
     }
 
-    // Update Patient documents — set assignedNurse field
     await Patient.updateMany(
       { _id: { $in: patientIds } },
       { assignedNurse: nurse._id }
     );
 
-    // Also update Nurse.assignedPatients array
     await Nurse.findByIdAndUpdate(nurse._id, {
       $addToSet: { assignedPatients: { $each: patientIds } },
     });
 
     res.status(200).json({
       success: true,
-      message: `${patientIds.length} patient(s) assigned to ${nurse.name}`,
+      message: patientIds.length + ' patient(s) assigned to ' + nurse.name,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
