@@ -5,7 +5,6 @@ const Alert    = require('../models/Alert');
 const Reading  = require('../models/Reading');
 const Nurse    = require('../models/Nurse');
 
-// ─── Helper: build date filter ───
 const dateFilter = (from, to) => {
   const filter = {};
   if (from || to) {
@@ -21,10 +20,24 @@ const dateFilter = (from, to) => {
 // @access  Private
 const getDashboardStats = async (req, res) => {
   try {
-    const [totalPatients, activeDevices, unresolvedAlerts, activeSessions] = await Promise.all([
+    const [
+      totalPatients,
+      activeDevices,
+      unresolvedAlerts,
+      activeSessions,
+    ] = await Promise.all([
+      // Total registered patients
       Patient.countDocuments(),
-      Device.countDocuments({ status: { $in: ['online', 'idle'] } }),
+
+      // Active devices = only devices with status 'online'
+      // AND that have sent a reading in the last 10 minutes
+      Device.countDocuments({ status: 'online' }),
+
+      // Unresolved alerts = status 'active' only
       Alert.countDocuments({ status: 'active' }),
+
+      // Active sessions = sessions with status 'active'
+      // AND patient still has this session as activeSession
       Session.countDocuments({ status: 'active' }),
     ]);
 
@@ -36,6 +49,7 @@ const getDashboardStats = async (req, res) => {
       activeSessions,
     });
   } catch (error) {
+    console.error('getDashboardStats error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -48,7 +62,6 @@ const getReports = async (req, res) => {
     const { from, to } = req.query;
     const dFilter = dateFilter(from, to);
 
-    // ── Overview ──────────────────────────────────────────────
     const [
       totalSessions,
       totalAlerts,
@@ -63,17 +76,19 @@ const getReports = async (req, res) => {
       Session.find(dFilter).select('createdAt').lean(),
     ]);
 
-    // Daily alerts for bar chart (last 7 days)
+    // Daily alerts bar chart
     const dailyAlertsMap = {};
     allAlerts.forEach((a) => {
-      const day = new Date(a.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const day = new Date(a.createdAt).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric',
+      });
       dailyAlertsMap[day] = (dailyAlertsMap[day] || 0) + 1;
     });
     const dailyAlerts = Object.entries(dailyAlertsMap)
       .map(([date, count]) => ({ date, count }))
       .slice(-7);
 
-    // Alert types for pie chart
+    // Alert types pie chart
     const alertTypesMap = {};
     allAlerts.forEach((a) => {
       const t = a.type || 'unknown';
@@ -82,17 +97,19 @@ const getReports = async (req, res) => {
     const alertTypes = Object.entries(alertTypesMap)
       .map(([type, count]) => ({ type: type.replace(/_/g, ' '), count }));
 
-    // Daily sessions for line chart
+    // Daily sessions line chart
     const dailySessionsMap = {};
     allSessions.forEach((s) => {
-      const day = new Date(s.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const day = new Date(s.createdAt).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric',
+      });
       dailySessionsMap[day] = (dailySessionsMap[day] || 0) + 1;
     });
     const dailySessions = Object.entries(dailySessionsMap)
       .map(([date, count]) => ({ date, count }))
       .slice(-7);
 
-    // Avg response time (minutes between createdAt and acknowledgedAt)
+    // Avg response time
     const responded = allAlerts.filter((a) => a.acknowledgedAt);
     const avgResponseTime = responded.length
       ? Math.round(
@@ -106,27 +123,25 @@ const getReports = async (req, res) => {
       ? Math.round((resolvedAlerts / totalAlerts) * 100)
       : 0;
 
-    // ── Device Performance ────────────────────────────────────
+    // Device performance
     const devices = await Device.find().select('deviceId status').lean();
 
     const deviceReadingsCounts = await Reading.aggregate([
-      ...(from || to ? [{ $match: dFilter }] : []),
+      ...(Object.keys(dFilter).length ? [{ $match: dFilter }] : []),
       { $group: { _id: '$deviceId', count: { $sum: 1 } } },
     ]);
 
     const deviceReadings = deviceReadingsCounts.map((d) => ({
       deviceId: d._id,
-      count: d.count,
+      count:    d.count,
     }));
 
     const deviceUptime = devices.map((d) => ({
       deviceId: d.deviceId,
-      uptime: d.status === 'online' ? 98 : d.status === 'idle' ? 75 : 10,
+      uptime:   d.status === 'online' ? 98 : d.status === 'idle' ? 75 : 10,
     }));
 
-    // ── Nurse Performance ─────────────────────────────────────
-    const nurses = await Nurse.find().select('name').lean();
-
+    // Nurse performance
     const nurseAlertData = await Alert.aggregate([
       { $match: { ...dFilter, status: 'resolved', resolvedBy: { $ne: null } } },
       { $group: { _id: '$resolvedBy', resolved: { $sum: 1 } } },
@@ -139,7 +154,6 @@ const getReports = async (req, res) => {
       })
     );
 
-    // Avg response time per nurse
     const nurseResponseData = await Alert.aggregate([
       {
         $match: {
@@ -170,9 +184,9 @@ const getReports = async (req, res) => {
       })
     );
 
-    // ── Patient Therapy ───────────────────────────────────────
+    // Patient therapy
     const sessionsByPatient = await Session.aggregate([
-      ...(from || to ? [{ $match: dFilter }] : []),
+      ...(Object.keys(dFilter).length ? [{ $match: dFilter }] : []),
       { $group: { _id: '$patient', sessions: { $sum: 1 } } },
       { $sort: { sessions: -1 } },
       { $limit: 10 },
@@ -186,7 +200,7 @@ const getReports = async (req, res) => {
     );
 
     const fluidTypesData = await Session.aggregate([
-      ...(from || to ? [{ $match: dFilter }] : []),
+      ...(Object.keys(dFilter).length ? [{ $match: dFilter }] : []),
       { $group: { _id: '$fluidType', count: { $sum: 1 } } },
     ]);
 
@@ -195,11 +209,8 @@ const getReports = async (req, res) => {
       count: f.count,
     }));
 
-    // ── Final Response ────────────────────────────────────────
     res.status(200).json({
       success: true,
-
-      // Overview
       totalSessions,
       totalAlerts,
       avgResponseTime,
@@ -207,16 +218,10 @@ const getReports = async (req, res) => {
       dailyAlerts,
       alertTypes,
       dailySessions,
-
-      // Device Performance
       deviceUptime,
       deviceReadings,
-
-      // Nurse Performance
       nurseAlerts,
       nurseResponseTimes,
-
-      // Patient Therapy
       patientSessions,
       fluidTypes,
     });
