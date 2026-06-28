@@ -1,17 +1,16 @@
 const Ward    = require('../models/Ward');
 const Patient = require('../models/Patient');
 
-// @desc    Get all wards with their active patients
-// @route   GET /api/wards
-// @access  Private
 const getWards = async (req, res) => {
   try {
     const wards = await Ward.find({ isActive: true }).sort({ name: 1 });
 
-    // Attach active patients to each ward
     const wardsWithPatients = await Promise.all(
       wards.map(async (ward) => {
-        const patients = await Patient.find({ ward: ward.name })
+        // Case-insensitive match so "ward 2" matches "Ward 2"
+        const patients = await Patient.find({
+          ward: { $regex: new RegExp('^' + ward.name + '$', 'i') },
+        })
           .select('name status bedNumber')
           .lean();
 
@@ -31,9 +30,6 @@ const getWards = async (req, res) => {
   }
 };
 
-// @desc    Get single ward
-// @route   GET /api/wards/:id
-// @access  Private
 const getWard = async (req, res) => {
   try {
     const ward = await Ward.findById(req.params.id);
@@ -46,22 +42,21 @@ const getWard = async (req, res) => {
   }
 };
 
-// @desc    Create a ward
-// @route   POST /api/wards
-// @access  Private
 const createWard = async (req, res) => {
   try {
     const { name, floor, capacity } = req.body;
-
     if (!name) {
       return res.status(400).json({ success: false, message: 'Ward name is required.' });
     }
-
-    const existing = await Ward.findOne({ name: name.trim() });
+    const existing = await Ward.findOne({
+      name: { $regex: new RegExp('^' + name.trim() + '$', 'i') },
+    });
     if (existing) {
-      return res.status(400).json({ success: false, message: `Ward "${name}" already exists.` });
+      return res.status(400).json({
+        success: false,
+        message: 'Ward "' + name + '" already exists.',
+      });
     }
-
     const ward = await Ward.create({ name: name.trim(), floor, capacity });
     res.status(201).json({ success: true, ward });
   } catch (error) {
@@ -69,9 +64,6 @@ const createWard = async (req, res) => {
   }
 };
 
-// @desc    Update a ward
-// @route   PUT /api/wards/:id
-// @access  Private
 const updateWard = async (req, res) => {
   try {
     const ward = await Ward.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -84,9 +76,6 @@ const updateWard = async (req, res) => {
   }
 };
 
-// @desc    Delete (deactivate) a ward
-// @route   DELETE /api/wards/:id
-// @access  Private
 const deleteWard = async (req, res) => {
   try {
     const ward = await Ward.findByIdAndUpdate(
@@ -103,10 +92,4 @@ const deleteWard = async (req, res) => {
   }
 };
 
-module.exports = {
-  getWards,
-  getWard,
-  createWard,
-  updateWard,
-  deleteWard,
-};
+module.exports = { getWards, getWard, createWard, updateWard, deleteWard };
