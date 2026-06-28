@@ -1,60 +1,99 @@
-// backend/controllers/deviceController.js
-const Device = require('../models/Device');
+const Device  = require('../models/Device');
+const Patient = require('../models/Patient');
+const Session = require('../models/Session');
 const Reading = require('../models/Reading');
 
-// @desc    Get all devices with live status
+// @desc    Get all devices
 // @route   GET /api/devices
 // @access  Private
 const getDevices = async (req, res) => {
   try {
-    const { status, ward } = req.query;
+    const { search, status } = req.query;
     const filter = {};
 
     if (status) filter.status = status;
-    if (ward) filter.ward = ward;
+    if (search) {
+      filter.$or = [
+        { deviceId:   { $regex: search, $options: 'i' } },
+        { macAddress: { $regex: search, $options: 'i' } },
+        { location:   { $regex: search, $options: 'i' } },
+      ];
+    }
 
     const devices = await Device.find(filter)
-      .populate('assignedPatient', 'name ward bedNumber')
-      .populate('assignedSession')
-      .sort({ createdAt: -1 });
+      .populate('assignedPatient', 'name ward bedNumber status')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Attach latest reading to each device
+    const devicesWithReadings = await Promise.all(
+      devices.map(async (d) => {
+        const latestReading = await Reading.findOne({ deviceId: d.deviceId })
+          .sort({ createdAt: -1 })
+          .lean();
+
+        return {
+          ...d,
+          batteryPct: latestReading?.batteryPct ?? d.batteryPct,
+          lastSeen:   latestReading?.createdAt  ?? d.lastSeen,
+        };
+      })
+    );
 
     res.status(200).json({
       success: true,
-      count: devices.length,
-      devices,
+      count: devicesWithReadings.length,
+      devices: devicesWithReadings,
     });
   } catch (error) {
+    console.error('getDevices error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get single device with history
+// @desc    Get single device with full details
 // @route   GET /api/devices/:id
 // @access  Private
 const getDevice = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id)
-      .populate('assignedPatient', 'name ward bedNumber')
-      .populate('assignedSession');
+      .populate('assignedPatient', 'name ward bedNumber status activeSession')
+      .lean();
 
     if (!device) {
-      return res.status(404).json({
-        success: false,
-        message: 'Device not found',
-      });
+      return res.status(404).json({ success: false, message: 'Device not found' });
     }
 
-    // Get last 20 readings for this device
-    const readings = await Reading.find({ device: req.params.id })
-      .sort({ recordedAt: -1 })
-      .limit(20);
+    // Get recent readings using string deviceId
+    const recentReadings = await Reading.find({ deviceId: device.deviceId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+
+    // Get active session for this device
+    const activeSession = await Session.findOne({
+      device: device._id,
+      status: 'active',
+    })
+      .populate('patient', 'name ward bedNumber')
+      .populate('nurse',   'name')
+      .lean();
+
+    // Use latest reading for live battery + lastSeen
+    const latestReading = recentReadings[0] || null;
 
     res.status(200).json({
       success: true,
-      device,
-      readings,
+      ...device,
+      batteryPct:      latestReading?.batteryPct ?? device.batteryPct,
+      lastSeen:        latestReading?.createdAt  ?? device.lastSeen,
+      status:          latestReading ? 'online' : device.status,
+      recentReadings,
+      activeSession,
+      // assignedPatient comes from populate above
     });
   } catch (error) {
+    console.error('getDevice error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -64,65 +103,39 @@ const getDevice = async (req, res) => {
 // @access  Private
 const registerDevice = async (req, res) => {
   try {
-    const { deviceId, macAddress, label, ward, firmwareVersion } = req.body;
+    const { deviceId, macAddress, location } = req.body;
 
-    // Check if device already exists
+    if (!deviceId) {
+      return res.status(400).json({ success: false, message: 'deviceId is required.' });
+    }
+
     const existing = await Device.findOne({ deviceId });
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: 'Device with this ID already exists',
+        message: `Device "${deviceId}" already registered.`,
       });
     }
 
-    const device = await Device.create({
-      deviceId,
-      macAddress,
-      label,
-      ward,
-      firmwareVersion,
-      status: 'idle',
-    });
-
-    // Emit socket event
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('device:registered', { device });
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Device registered successfully',
-      device,
-    });
+    const device = await Device.create({ deviceId, macAddress, location });
+    res.status(201).json({ success: true, device });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Update device details
+// @desc    Update device
 // @route   PUT /api/devices/:id
 // @access  Private
 const updateDevice = async (req, res) => {
   try {
     const device = await Device.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
+      req.params.id, req.body, { new: true }
     );
-
     if (!device) {
-      return res.status(404).json({
-        success: false,
-        message: 'Device not found',
-      });
+      return res.status(404).json({ success: false, message: 'Device not found' });
     }
-
-    res.status(200).json({
-      success: true,
-      message: 'Device updated successfully',
-      device,
-    });
+    res.status(200).json({ success: true, device });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -134,59 +147,32 @@ const updateDevice = async (req, res) => {
 const unassignDevice = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id);
-
     if (!device) {
-      return res.status(404).json({
-        success: false,
-        message: 'Device not found',
-      });
+      return res.status(404).json({ success: false, message: 'Device not found' });
     }
 
-    await Device.findByIdAndUpdate(req.params.id, {
+    await Device.findByIdAndUpdate(device._id, {
+      status:          'idle',
       assignedPatient: null,
       assignedSession: null,
-      status: 'idle',
     });
 
-    // Emit socket event
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('device:unassigned', { deviceId: req.params.id });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Device unassigned successfully',
-    });
+    res.status(200).json({ success: true, message: 'Device unassigned successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Force reconnect device (placeholder)
-// @route   POST /api/devices/:id/reconnect
+// @desc    Delete device
+// @route   DELETE /api/devices/:id
 // @access  Private
-const forceReconnect = async (req, res) => {
+const deleteDevice = async (req, res) => {
   try {
-    const device = await Device.findById(req.params.id);
-
+    const device = await Device.findByIdAndDelete(req.params.id);
     if (!device) {
-      return res.status(404).json({
-        success: false,
-        message: 'Device not found',
-      });
+      return res.status(404).json({ success: false, message: 'Device not found' });
     }
-
-    // Emit reconnect command via socket
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('device:reconnect', { deviceId: device.deviceId });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Reconnect signal sent to device',
-    });
+    res.status(200).json({ success: true, message: 'Device deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -198,5 +184,5 @@ module.exports = {
   registerDevice,
   updateDevice,
   unassignDevice,
-  forceReconnect,
+  deleteDevice,
 };

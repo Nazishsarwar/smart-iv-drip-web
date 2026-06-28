@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Wifi, WifiOff, Battery, MapPin, Clock, User } from 'lucide-react';
+import {
+  ArrowLeft, Wifi, WifiOff, Battery,
+  BatteryLow, MapPin, Clock, User
+} from 'lucide-react';
 import { getDeviceByIdApi, unassignDeviceApi } from '../api/deviceApi';
 import { useSocket } from '../context/SocketContext';
 
@@ -12,17 +15,19 @@ const statusBadge = {
 };
 
 export default function DeviceDetailPage() {
-  const { id } = useParams();
-  const navigate = useNavigate();
-  const { socket } = useSocket();
-  const [device, setDevice] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [unassigning, setUnassigning] = useState(false);
+  const { id }       = useParams();
+  const navigate     = useNavigate();
+  const { socket }   = useSocket();
+  const [device,     setDevice]     = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [unassigning,setUnassigning]= useState(false);
 
   const fetchDevice = async () => {
     try {
       const res = await getDeviceByIdApi(id);
-      setDevice(res.data);
+      // Backend spreads device fields directly into response
+      const data = res.data;
+      setDevice(data);
     } catch (err) {
       console.error('Device detail fetch error:', err);
     } finally {
@@ -34,23 +39,41 @@ export default function DeviceDetailPage() {
 
   useEffect(() => {
     if (!socket || !device) return;
+
     const handleReading = (data) => {
-      if (data.deviceId === device.deviceId) {
-        setDevice((prev) => ({ ...prev, batteryPct: data.batteryPct, lastSeen: new Date(), status: 'online' }));
-      }
+      if (data.deviceId !== device.deviceId) return;
+      setDevice((prev) => ({
+        ...prev,
+        batteryPct: data.batteryPct,
+        lastSeen:   new Date().toISOString(),
+        status:     'online',
+        recentReadings: [
+          {
+            dropsPerMin: data.dropsPerMin,
+            volumeMl:    data.volumeMl,
+            batteryPct:  data.batteryPct,
+            createdAt:   new Date().toISOString(),
+          },
+          ...(prev.recentReadings || []).slice(0, 19),
+        ],
+      }));
     };
+
     const handleOffline = (data) => {
-      if (data.deviceId === device.deviceId) setDevice((prev) => ({ ...prev, status: 'offline' }));
+      if (data.deviceId !== device.deviceId) return;
+      setDevice((prev) => ({ ...prev, status: 'offline' }));
     };
+
     socket.on('reading:update', handleReading);
     socket.on('device:offline',  handleOffline);
     return () => {
       socket.off('reading:update', handleReading);
       socket.off('device:offline',  handleOffline);
     };
-  }, [socket, device]);
+  }, [socket, device?.deviceId]);
 
   const handleUnassign = async () => {
+    if (!window.confirm('Unassign this device from the patient?')) return;
     setUnassigning(true);
     try {
       await unassignDeviceApi(id);
@@ -72,28 +95,42 @@ export default function DeviceDetailPage() {
     <div className="text-center py-12 text-text-secondary">Device not found.</div>
   );
 
-  const status = device.status || 'offline';
+  const status     = device.status     || 'offline';
+  const batteryPct = device.batteryPct ?? null;
+
+  // assignedPatient comes from populate
+  const assignedPatient = device.assignedPatient || null;
 
   return (
     <div className="space-y-6">
+
       {/* Header */}
       <div className="flex items-start gap-4">
-        <button onClick={() => navigate('/devices')}
-          className="p-2 rounded-control hover:bg-surface-alt transition-colors mt-0.5">
+        <button
+          onClick={() => navigate('/devices')}
+          className="p-2 rounded-control hover:bg-surface-alt transition-colors mt-0.5"
+        >
           <ArrowLeft className="w-5 h-5 text-text-secondary" />
         </button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-2xl font-bold text-text-primary font-mono">{device.deviceId}</h1>
-            <span className={`text-xs font-medium px-2.5 py-1 rounded-full capitalize ${statusBadge[status]}`}>
+            <h1 className="font-display text-2xl font-bold text-text-primary font-mono">
+              {device.deviceId}
+            </h1>
+            <span className={`text-xs font-medium px-2.5 py-1 rounded-full capitalize ${statusBadge[status] || statusBadge.offline}`}>
               {status}
             </span>
           </div>
-          <p className="text-text-secondary text-sm mt-1">{device.macAddress || 'No MAC address'} · {device.location || 'No location'}</p>
+          <p className="text-text-secondary text-sm mt-1">
+            {device.macAddress || 'No MAC address'} · {device.location || 'No location'}
+          </p>
         </div>
-        {device.assignedPatient && (
-          <button onClick={handleUnassign} disabled={unassigning}
-            className="px-4 py-2 rounded-control border border-status-critical text-status-critical text-sm font-medium hover:bg-red-50 transition-colors disabled:opacity-60">
+        {assignedPatient && (
+          <button
+            onClick={handleUnassign}
+            disabled={unassigning}
+            className="px-4 py-2 rounded-control border border-status-critical text-status-critical text-sm font-medium hover:bg-red-50 transition-colors disabled:opacity-60"
+          >
             {unassigning ? 'Unassigning...' : 'Unassign Device'}
           </button>
         )}
@@ -102,15 +139,41 @@ export default function DeviceDetailPage() {
       {/* Info Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { icon: status === 'online' ? Wifi : WifiOff, label: 'Connection', value: status, color: status === 'online' ? 'text-status-ok' : 'text-status-offline' },
-          { icon: Battery, label: 'Battery', value: device.batteryPct != null ? `${device.batteryPct}%` : '—', color: (device.batteryPct || 0) < 20 ? 'text-status-critical' : 'text-status-ok' },
-          { icon: MapPin, label: 'Location', value: device.location || '—', color: 'text-text-primary' },
-          { icon: Clock, label: 'Last Seen', value: device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '—', color: 'text-text-primary' },
+          {
+            icon:  status === 'online' ? Wifi : WifiOff,
+            label: 'Connection',
+            value: status,
+            color: status === 'online' ? 'text-status-ok' : 'text-status-offline',
+          },
+          {
+            icon:  batteryPct !== null && batteryPct < 20 ? BatteryLow : Battery,
+            label: 'Battery',
+            value: batteryPct !== null ? `${batteryPct}%` : '—',
+            color: batteryPct !== null && batteryPct < 20
+              ? 'text-status-critical'
+              : 'text-status-ok',
+          },
+          {
+            icon:  MapPin,
+            label: 'Location',
+            value: device.location || '—',
+            color: 'text-text-primary',
+          },
+          {
+            icon:  Clock,
+            label: 'Last Seen',
+            value: device.lastSeen
+              ? new Date(device.lastSeen).toLocaleString()
+              : '—',
+            color: 'text-text-primary',
+          },
         ].map(({ icon: Icon, label, value, color }) => (
           <div key={label} className="bg-white rounded-card border border-border shadow-sm p-4">
             <div className="flex items-center gap-2 mb-2">
               <Icon className={`w-4 h-4 ${color}`} />
-              <p className="text-xs text-text-secondary font-medium uppercase tracking-wide">{label}</p>
+              <p className="text-xs text-text-secondary font-medium uppercase tracking-wide">
+                {label}
+              </p>
             </div>
             <p className={`font-display font-600 text-base capitalize ${color}`}>{value}</p>
           </div>
@@ -123,14 +186,18 @@ export default function DeviceDetailPage() {
           <User className="w-4 h-4 text-primary" />
           <h3 className="font-display font-600 text-text-primary text-sm">Assigned Patient</h3>
         </div>
-        {device.assignedPatient ? (
+        {assignedPatient ? (
           <div className="flex items-center justify-between">
             <div>
-              <p className="font-medium text-text-primary">{device.assignedPatient.name}</p>
-              <p className="text-sm text-text-secondary">{device.assignedPatient.ward} · Bed {device.assignedPatient.bedNumber}</p>
+              <p className="font-medium text-text-primary">{assignedPatient.name}</p>
+              <p className="text-sm text-text-secondary">
+                {assignedPatient.ward} · Bed {assignedPatient.bedNumber}
+              </p>
             </div>
-            <button onClick={() => navigate(`/patients/${device.assignedPatient._id}`)}
-              className="px-3 py-1.5 rounded-control border border-border text-sm text-text-secondary hover:bg-surface-alt transition-colors">
+            <button
+              onClick={() => navigate(`/patients/${assignedPatient._id}`)}
+              className="px-3 py-1.5 rounded-control border border-border text-sm text-text-secondary hover:bg-surface-alt transition-colors"
+            >
               View Patient
             </button>
           </div>
@@ -139,28 +206,72 @@ export default function DeviceDetailPage() {
         )}
       </div>
 
-      {/* Reading History */}
+      {/* Active Session */}
+      {device.activeSession && (
+        <div className="bg-white rounded-card border border-border shadow-sm p-5">
+          <h3 className="font-display font-600 text-text-primary text-sm mb-4">Active Session</h3>
+          <dl className="grid grid-cols-2 gap-3 text-sm">
+            {[
+              ['Prescribed Rate', `${device.activeSession.prescribedRate} drops/min`],
+              ['Total Volume',    `${device.activeSession.totalVolume} ml`],
+              ['Fluid Type',      device.activeSession.fluidType || '—'],
+              ['Started',         new Date(device.activeSession.startTime).toLocaleString()],
+              ['Nurse',           device.activeSession.nurse?.name || '—'],
+            ].map(([label, value]) => (
+              <div key={label} className="bg-surface-alt rounded-control p-3">
+                <p className="text-xs text-text-secondary mb-1">{label}</p>
+                <p className="font-medium text-text-primary">{value}</p>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
+      {/* Recent Readings */}
       <div className="bg-white rounded-card border border-border shadow-sm">
-        <div className="px-5 py-4 border-b border-border">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
           <h3 className="font-display font-600 text-text-primary text-sm">Recent Readings</h3>
+          <span className="text-xs text-text-secondary">
+            {(device.recentReadings || []).length} readings
+          </span>
         </div>
         <div className="divide-y divide-border">
           {(device.recentReadings || []).length === 0 ? (
-            <p className="text-center py-8 text-text-secondary text-sm">No readings recorded yet.</p>
+            <p className="text-center py-8 text-text-secondary text-sm">
+              No readings yet — send a reading via Postman or ESP32.
+            </p>
           ) : (
-            device.recentReadings.map((r, i) => (
+            (device.recentReadings || []).map((r, i) => (
               <div key={i} className="px-5 py-3 flex items-center justify-between text-sm">
                 <div className="flex gap-6">
-                  <span className="text-text-secondary">Rate: <span className="text-text-primary font-medium tabular-nums">{r.dropsPerMin} drops/min</span></span>
-                  <span className="text-text-secondary">Volume: <span className="text-text-primary font-medium tabular-nums">{r.volumeMl} ml</span></span>
-                  <span className="text-text-secondary">Battery: <span className="text-text-primary font-medium tabular-nums">{r.batteryPct}%</span></span>
+                  <span className="text-text-secondary">
+                    Rate:{' '}
+                    <span className="text-text-primary font-medium tabular-nums">
+                      {r.dropsPerMin} drops/min
+                    </span>
+                  </span>
+                  <span className="text-text-secondary">
+                    Volume:{' '}
+                    <span className="text-text-primary font-medium tabular-nums">
+                      {r.volumeMl} ml
+                    </span>
+                  </span>
+                  <span className="text-text-secondary">
+                    Battery:{' '}
+                    <span className="text-text-primary font-medium tabular-nums">
+                      {r.batteryPct}%
+                    </span>
+                  </span>
                 </div>
-                <span className="text-xs text-text-secondary">{new Date(r.createdAt).toLocaleTimeString()}</span>
+                <span className="text-xs text-text-secondary">
+                  {new Date(r.createdAt).toLocaleTimeString()}
+                </span>
               </div>
             ))
           )}
         </div>
       </div>
+
     </div>
   );
 }
